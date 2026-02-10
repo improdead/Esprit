@@ -1332,6 +1332,25 @@ class EspritTUIApp(App):  # type: ignore[misc]
         scan_done = self._scan_completed.is_set()
         scan_failed = self._scan_failed.is_set()
 
+        # Detect agent-level failures even if the scan thread is still alive
+        # (e.g. LLM 400 error caught inside the agent loop)
+        if not scan_failed and not scan_done and self.tracer and self.tracer.agents:
+            _FAIL_STATUSES = {"failed", "llm_failed", "stopped"}
+            all_agents_done = all(
+                a.get("status") in (_FAIL_STATUSES | {"completed"})
+                for a in self.tracer.agents.values()
+            )
+            any_failed = any(
+                a.get("status") in _FAIL_STATUSES
+                for a in self.tracer.agents.values()
+            )
+            if all_agents_done and any_failed:
+                scan_failed = True
+                self._scan_failed.set()
+                if not self.tracer.end_time:
+                    from datetime import datetime, timezone
+                    self.tracer.end_time = datetime.now(timezone.utc).isoformat()
+
         stats_content = Text()
 
         stats_text = build_tui_stats_text(
