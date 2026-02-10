@@ -122,7 +122,7 @@ def cmd_config_model(model: str | None = None) -> int:
     pool = get_account_pool()
     config = Config()
 
-    _multi_account = {"openai", "antigravity"}
+    from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS as _multi_account
 
     # If no model specified, show interactive menu
     if not model:

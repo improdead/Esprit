@@ -281,7 +281,7 @@ def ensure_provider_configured() -> bool:
 
     # Check for multi-account providers
     pool = get_account_pool()
-    for provider_id in ["openai", "antigravity"]:
+    for provider_id in ["openai", "antigravity"]:  # noqa: from constants.MULTI_ACCOUNT_PROVIDERS
         if pool.has_accounts(provider_id):
             return True
         # Also check token_store as fallback (TUI may have saved there)
@@ -300,7 +300,7 @@ def _get_configured_providers() -> list[tuple[str, str]]:
     pool = get_account_pool()
     result = []
 
-    _multi_account = {"openai", "antigravity"}
+    from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS as _multi_account
 
     for provider_id in ["antigravity", "openai", "anthropic", "google", "github-copilot"]:
         if provider_id in _multi_account:
@@ -423,20 +423,28 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
         return False
 
     if not current_model and available_models:
-        console.print()
-        console.print("[bold]Select a model:[/]")
-        for i, (model_id, display) in enumerate(available_models, 1):
-            console.print(f"  {i}. {display} [dim]({model_id})[/]")
-        console.print()
-        choice = Prompt.ask(
-            "Enter number",
-            choices=[str(i) for i in range(1, len(available_models) + 1)],
-        )
-        selected_model = available_models[int(choice) - 1][0]
-        os.environ["ESPRIT_LLM"] = selected_model
-        Config.save_current()
-        current_model = selected_model
-        console.print(f"[green]Model set to: {current_model}[/]")
+        if non_interactive:
+            # Auto-select the first available model in non-interactive mode
+            selected_model = available_models[0][0]
+            os.environ["ESPRIT_LLM"] = selected_model
+            Config.save_current()
+            current_model = selected_model
+            console.print(f"[dim]Auto-selected model: {current_model}[/]")
+        else:
+            console.print()
+            console.print("[bold]Select a model:[/]")
+            for i, (model_id, display) in enumerate(available_models, 1):
+                console.print(f"  {i}. {display} [dim]({model_id})[/]")
+            console.print()
+            choice = Prompt.ask(
+                "Enter number",
+                choices=[str(i) for i in range(1, len(available_models) + 1)],
+            )
+            selected_model = available_models[int(choice) - 1][0]
+            os.environ["ESPRIT_LLM"] = selected_model
+            Config.save_current()
+            current_model = selected_model
+            console.print(f"[green]Model set to: {current_model}[/]")
 
     # --- Step 3: Show active account for multi-account providers ---
     from esprit.providers.account_pool import get_account_pool

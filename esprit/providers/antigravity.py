@@ -8,6 +8,7 @@ Uses the official Gemini CLI OAuth client for authentication.
 
 import asyncio
 import hashlib
+import html as html_mod
 import json
 import logging
 import secrets
@@ -172,7 +173,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
             error = params.get("error", [None])[0]
             if error:
                 self.server.error = params.get("error_description", [error])[0]
-                self._send(400, f"<h1>Error: {self.server.error}</h1>")
+                self._send(400, f"<h1>Error: {html_mod.escape(str(self.server.error))}</h1>")
                 return
             code = params.get("code", [None])[0]
             state = params.get("state", [None])[0]
@@ -303,9 +304,16 @@ class AntigravityProvider(ProviderAuth):
 
         # Start callback server
         server = _CallbackServer(port, state)
-        server_thread = threading.Thread(target=server.handle_request)
+        server_thread = threading.Thread(target=server.handle_request, daemon=True)
         server_thread.start()
-        server_thread.join(timeout=CALLBACK_TIMEOUT)
+        try:
+            await asyncio.to_thread(server_thread.join, CALLBACK_TIMEOUT)
+        finally:
+            try:
+                server.shutdown()
+                server.server_close()
+            except Exception:
+                pass
 
         if server.error:
             return AuthCallbackResult(success=False, error=server.error)

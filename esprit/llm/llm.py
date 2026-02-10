@@ -46,6 +46,14 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _mask_email(email: str) -> str:
+    """Mask email for logging to avoid PII exposure."""
+    if "@" in email:
+        local, domain = email.rsplit("@", 1)
+        return f"{local[:3]}***@{domain[:3]}***"
+    return email[:3] + "***"
+
+
 litellm.drop_params = True
 litellm.modify_params = True
 
@@ -156,7 +164,8 @@ class LLM:
         messages = self._prepare_messages(conversation_history)
         max_retries = int(Config.get("esprit_llm_max_retries") or "5")
 
-        for attempt in range(max_retries + 1):
+        attempt = 0
+        while attempt <= max_retries:
             try:
                 if self._is_antigravity():
                     async for response in self._stream_antigravity(messages):
@@ -168,17 +177,18 @@ class LLM:
             except Exception as e:  # noqa: BLE001
                 # Try account rotation on rate limit (429)
                 if self._try_rotate_on_rate_limit(e):
-                    # Rotated to a new account — retry immediately
+                    # Rotated to a new account — retry immediately (don't increment)
                     continue
                 if attempt >= max_retries or not self._should_retry(e):
                     # Before giving up, try auto model fallback for Antigravity
                     if self._is_antigravity() and self._try_model_fallback(e):
                         # Switched to fallback model — restart retry loop
-                        attempt = -1  # will become 0 after continue
+                        attempt = 0
                         continue
                     self._raise_error(e)
                 wait = min(10, 2 * (2**attempt))
                 await asyncio.sleep(wait)
+                attempt += 1
 
     async def _stream(self, messages: list[dict[str, Any]]) -> AsyncIterator[LLMResponse]:
         accumulated = ""
@@ -252,7 +262,7 @@ class LLM:
             messages=messages,
             model=model,
             project_id=project_id,
-            max_tokens=16384,
+            max_tokens=int(Config.get("esprit_max_tokens") or "16384"),
         )
         headers = build_request_headers(access_token, model)
 
@@ -278,6 +288,7 @@ class LLM:
                 if e.response.status_code == 400:
                     # Cloud Code 400s can be transient — retry on same endpoint
                     retried = False
+                    last_retry_error = e
                     for retry in range(2):
                         await asyncio.sleep(2 * (retry + 1))
                         try:
@@ -286,17 +297,18 @@ class LLM:
                             retried = True
                             return
                         except httpx.HTTPStatusError as retry_e:
+                            last_retry_error = retry_e
                             if retry_e.response.status_code != 400:
                                 raise
                     if not retried:
-                        raise
+                        raise last_retry_error
                 if e.response.status_code == 404:
                     # Model not found on this endpoint, try next
                     last_error = e
                     continue
                 last_error = e
             except httpx.ConnectError:
-                last_error = None
+                # Don't overwrite a more informative error from a previous endpoint
                 continue
 
         if last_error:
@@ -514,6 +526,13 @@ class LLM:
         model = self.config.model_name.lower()
         if model.startswith("antigravity/"):
             return True
+        # If an explicit non-antigravity provider prefix is given, respect it
+        if "/" in model:
+            prefix = model.split("/", 1)[0]
+            _NON_AG_PREFIXES = {"anthropic", "google", "openai", "bedrock",
+                                "github-copilot", "gemini", "azure", "vertex_ai"}
+            if prefix in _NON_AG_PREFIXES:
+                return False
         # Check if the bare model name is an antigravity model and oauth is configured
         bare = model.split("/", 1)[-1]
         if bare in ANTIGRAVITY_MODELS and should_use_oauth(f"antigravity/{bare}"):
@@ -531,14 +550,18 @@ class LLM:
             return False
 
         model = self.config.model_name or ""
-        client = get_auth_client()
-        provider_id = client.detect_provider(model)
+        # Check Antigravity routing first (mirrors _is_antigravity logic)
+        if self._is_antigravity():
+            provider_id = "antigravity"
+        else:
+            client = get_auth_client()
+            provider_id = client.detect_provider(model)
         if not provider_id:
             return False
 
         pool = get_account_pool()
-        # Find the current account's email
-        current = pool.get_best_account(provider_id)
+        # Read-only peek to get the current account's email (no disk write)
+        current = pool.peek_best_account(provider_id)
         if not current:
             return False
 
@@ -557,18 +580,20 @@ class LLM:
         pool.mark_rate_limited(provider_id, current.email, bare_model, retry_after)
         rotated = pool.rotate(provider_id, bare_model)
         if rotated:
-            logger.info("Rate limited on %s, rotated to %s", current.email, rotated.email)
+            logger.info("Rate limited on %s, rotated to %s",
+                        _mask_email(current.email), _mask_email(rotated.email))
             return True
-        logger.warning("Rate limited on %s, no other accounts available", current.email)
+        logger.warning("Rate limited on %s, no other accounts available",
+                       _mask_email(current.email))
         return False
 
     def _try_model_fallback(self, e: Exception) -> bool:
         """Try switching to the next fallback model when the current one fails persistently.
 
-        Only activates for Antigravity models when ESPRIT_AUTO_FALLBACK is not 'false'.
+        Only activates for Antigravity models when ESPRIT_AUTO_FALLBACK is not disabled.
         Returns True if successfully switched to a fallback model.
         """
-        if Config.get("esprit_auto_fallback") == "false":
+        if str(Config.get("esprit_auto_fallback") or "").lower() in ("false", "0", "no"):
             return False
 
         if not PROVIDERS_AVAILABLE:
@@ -582,7 +607,9 @@ class LLM:
         if not fallbacks:
             return False
 
-        # Track which models have already been tried this session
+        # Track original model and which models have been tried this session
+        if not hasattr(self, "_original_model"):
+            self._original_model = current_model
         if not hasattr(self, "_tried_models"):
             self._tried_models: set[str] = set()
         self._tried_models.add(current_model.split("/", 1)[-1] if "/" in current_model else current_model)
@@ -591,7 +618,9 @@ class LLM:
             if fallback in self._tried_models:
                 continue
 
-            # Switch model
+            # Switch model — intentionally sticky: the fallback becomes the
+            # active model for the remainder of this LLM instance's lifetime
+            # to avoid repeated failures on the original model.
             old_model = current_model
             prefix = current_model.split("/", 1)[0] + "/" if "/" in current_model else "antigravity/"
             new_model = f"{prefix}{fallback}"

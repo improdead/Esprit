@@ -8,6 +8,7 @@ Supports sticky (stay until rate-limited) and round-robin strategies.
 import json
 import logging
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,10 +66,22 @@ class AccountPool:
     def _save(self) -> None:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         data = {"version": 1, "pools": self._load()}
-        with self.accounts_file.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        if os.name != "nt":
-            os.chmod(self.accounts_file, 0o600)
+        # Atomic write: temp file + rename to prevent corruption on crash
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.config_dir), suffix=".tmp", prefix="accounts_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            if os.name != "nt":
+                os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, str(self.accounts_file))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def _get_pool(self, provider_id: str) -> dict[str, Any]:
         pools = self._load()
@@ -197,6 +210,56 @@ class AccountPool:
         """Get credentials for the current active account."""
         acct = self.get_best_account(provider_id)
         return acct.credentials if acct else None
+
+    def peek_best_account(
+        self, provider_id: str, model: str | None = None
+    ) -> AccountEntry | None:
+        """Get the best available account without mutating state (read-only).
+
+        Use this when you only need to inspect the current account (e.g., to
+        read its email) without triggering a disk write.
+        """
+        accounts = self._load_accounts(provider_id)
+        if not accounts:
+            return None
+
+        now_ms = int(time.time() * 1000)
+        self._clear_expired_limits(accounts, now_ms)
+
+        pool = self._get_pool(provider_id)
+        strategy = pool.get("strategy", "sticky")
+        active_idx = pool.get("active_index", 0)
+
+        available = [
+            (i, a)
+            for i, a in enumerate(accounts)
+            if a.enabled and (not a.cooling_until or a.cooling_until <= now_ms)
+        ]
+        if not available:
+            available = [(i, a) for i, a in enumerate(accounts) if a.enabled]
+            if not available:
+                return None
+
+        if model:
+            not_limited = [
+                (i, a) for i, a in available if model not in a.rate_limits
+            ]
+            if not_limited:
+                available = not_limited
+
+        if strategy == "round-robin":
+            available.sort(key=lambda x: (x[0] <= active_idx, x[0]))
+            _, chosen = available[0]
+        else:
+            active_match = [
+                (i, a) for i, a in available if i == active_idx
+            ]
+            if active_match:
+                _, chosen = active_match[0]
+            else:
+                _, chosen = available[0]
+
+        return chosen
 
     def get_best_account(
         self, provider_id: str, model: str | None = None

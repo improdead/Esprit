@@ -24,7 +24,7 @@ from esprit.providers.account_pool import AccountPool, get_account_pool
 console = Console()
 
 # Providers that support multiple accounts
-MULTI_ACCOUNT_PROVIDERS = {"openai", "antigravity"}
+from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS
 
 
 def cmd_provider_login(provider_id: str | None = None) -> int:

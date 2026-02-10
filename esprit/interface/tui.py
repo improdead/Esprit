@@ -1019,16 +1019,6 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 "llm_failed": "✗",
             }
 
-            status_colors = {
-                "running": "#22d3ee",
-                "waiting": "#eab308",
-                "completed": "#22c55e",
-                "failed": "#ef4444",
-                "stopped": "#6b7280",
-                "stopping": "#6b7280",
-                "llm_failed": "#ef4444",
-            }
-
             status_icon = status_indicators.get(status, "○")
             vuln_count = self._agent_vulnerability_count(agent_id)
             vuln_indicator = f" ({vuln_count})" if vuln_count > 0 else ""
@@ -1335,9 +1325,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
         # Detect agent-level failures even if the scan thread is still alive
         # (e.g. LLM 400 error caught inside the agent loop)
         if not scan_failed and not scan_done and self.tracer and self.tracer.agents:
-            _FAIL_STATUSES = {"failed", "llm_failed", "stopped"}
+            _FAIL_STATUSES = {"failed", "llm_failed"}
+            _DONE_STATUSES = _FAIL_STATUSES | {"completed", "stopped"}
             all_agents_done = all(
-                a.get("status") in (_FAIL_STATUSES | {"completed"})
+                a.get("status") in _DONE_STATUSES
                 for a in self.tracer.agents.values()
             )
             any_failed = any(
@@ -1695,13 +1686,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
         status = agent_data.get("status", "running")
 
         status_indicators = {
-            "running": "⚪",
+            "running": "◐",
             "waiting": "⏸",
-            "completed": "🟢",
-            "failed": "🔴",
+            "completed": "✓",
+            "failed": "✗",
             "stopped": "■",
             "stopping": "○",
-            "llm_failed": "🔴",
+            "llm_failed": "✗",
         }
 
         status_icon = status_indicators.get(status, "○")

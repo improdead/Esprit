@@ -17,11 +17,12 @@ from esprit.providers import get_provider_auth, PROVIDERS
 from esprit.providers.base import OAuthCredentials
 from esprit.providers.token_store import TokenStore
 from esprit.providers.account_pool import AccountPool, get_account_pool
+from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
 # Providers that use the multi-account pool
-_MULTI_ACCOUNT_PROVIDERS = {"openai", "antigravity"}
+_MULTI_ACCOUNT_PROVIDERS = MULTI_ACCOUNT_PROVIDERS
 
 
 class ProviderAuthClient:
@@ -73,6 +74,15 @@ class ProviderAuthClient:
                 return prefix
 
         # Detect from model name
+        # Check if bare model name is an Antigravity model with active accounts
+        try:
+            from esprit.providers.antigravity import ANTIGRAVITY_MODELS
+            bare = model_lower.split("/", 1)[-1]
+            if bare in ANTIGRAVITY_MODELS and get_account_pool().has_accounts("antigravity"):
+                return "antigravity"
+        except ImportError:
+            pass
+
         if "claude" in model_lower:
             return "anthropic"
         if "gemini" in model_lower:
@@ -297,6 +307,8 @@ def sync_codex_credentials_to_litellm(model_name: str) -> None:
     try:
         with open(auth_file, "w") as f:
             json.dump(auth_data, f)
+        if os.name != "nt":
+            os.chmod(auth_file, 0o600)
     except OSError:
         logger.warning("Failed to sync credentials to litellm auth file")
 

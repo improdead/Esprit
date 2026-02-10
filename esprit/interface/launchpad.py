@@ -24,7 +24,7 @@ from esprit.providers.token_store import TokenStore
 from esprit.providers.account_pool import get_account_pool
 
 # Providers that use the multi-account pool
-_MULTI_ACCOUNT_PROVIDERS = {"openai", "antigravity"}
+from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS as _MULTI_ACCOUNT_PROVIDERS
 
 # Files that indicate a project root (ordered by priority)
 _PROJECT_MARKERS: list[tuple[str, str]] = [

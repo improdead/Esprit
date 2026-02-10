@@ -160,8 +160,8 @@ export TOOL_SERVER_TIMEOUT="${ESPRIT_SANDBOX_EXECUTION_TIMEOUT:-120}"
 TOOL_SERVER_LOG="/tmp/tool_server.log"
 
 # Tool server and its health check must bypass the Caido proxy
-export no_proxy="127.0.0.1,localhost"
-export NO_PROXY="127.0.0.1,localhost"
+export no_proxy="${no_proxy:+${no_proxy},}127.0.0.1,localhost"
+export NO_PROXY="${NO_PROXY:+${NO_PROXY},}127.0.0.1,localhost"
 
 sudo -E -u pentester \
   poetry run python -m esprit.runtime.tool_server \

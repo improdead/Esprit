@@ -379,7 +379,7 @@ def build_live_stats_text(tracer: Any, agent_config: dict[str, Any] | None = Non
         stats_text.append(f"${actual_cost:.4f}", style="#fbbf24")
     else:
         stats_text.append("Cost ", style="dim")
-        stats_text.append(f"${actual_cost:.4f}", style="#fbbf24")
+        stats_text.append(f"${actual_cost:.4f}", style="dim white")
 
     return stats_text
 
@@ -525,8 +525,15 @@ def build_tui_stats_text(
 
     # Agents / Tools / Requests
     stats_text.append("\n")
-    activity_char = _ACTIVITY_SPINNER[spinner_frame % len(_ACTIVITY_SPINNER)] if not scan_completed else "●"
-    activity_style = "#22d3ee" if not scan_completed else "#22c55e"
+    if scan_failed:
+        activity_char = "●"
+        activity_style = "#ef4444"
+    elif scan_completed:
+        activity_char = "●"
+        activity_style = "#22c55e"
+    else:
+        activity_char = _ACTIVITY_SPINNER[spinner_frame % len(_ACTIVITY_SPINNER)]
+        activity_style = "#22d3ee"
     stats_text.append(f"{activity_char} ", style=activity_style)
     stats_text.append(f"{agent_count}", style="white bold")
     stats_text.append(" agents  ", style="dim")
@@ -637,11 +644,10 @@ def build_tui_stats_text(
             sev = report.get("severity", "").lower()
             severity_counts[sev] = severity_counts.get(sev, 0) + 1
         sev_parts = []
-        sev_colors = {"critical": "#ef4444", "high": "#f97316", "medium": "#eab308", "low": "#22d3ee", "info": "#6b7280"}
         for sev in ["critical", "high", "medium", "low", "info"]:
             c = severity_counts.get(sev, 0)
             if c > 0:
-                sev_parts.append((c, sev, sev_colors.get(sev, "white")))
+                sev_parts.append((c, sev, get_severity_color(sev)))
         if sev_parts:
             stats_text.append("\n  ")
             for i, (c, label, color) in enumerate(sev_parts):

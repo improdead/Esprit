@@ -181,6 +181,8 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[
     """
     system_parts: list[dict[str, Any]] = []
     contents: list[dict[str, Any]] = []
+    # Map tool_call_id → function_name for resolving functionResponse names
+    tc_id_to_name: dict[str, str] = {}
 
     for msg in messages:
         role = msg.get("role", "user")
@@ -200,6 +202,8 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[
         if role == "tool":
             # Tool result → functionResponse
             tool_call_id = msg.get("tool_call_id", "")
+            # Resolve the function name from a prior assistant message's tool_calls
+            func_name = tc_id_to_name.get(tool_call_id, tool_call_id)
             result_content = content
             if isinstance(result_content, str):
                 try:
@@ -211,7 +215,7 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[
                 "role": "user",
                 "parts": [{
                     "functionResponse": {
-                        "name": tool_call_id,
+                        "name": func_name,
                         "response": result_content
                         if isinstance(result_content, dict)
                         else {"result": str(result_content)},
@@ -237,6 +241,11 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[
         # Handle tool calls in assistant messages
         tool_calls = msg.get("tool_calls", [])
         for tc in tool_calls:
+            # Record tool_call_id → function name for later functionResponse resolution
+            tc_id = tc.get("id", "")
+            tc_func_name = tc.get("function", {}).get("name", "")
+            if tc_id and tc_func_name:
+                tc_id_to_name[tc_id] = tc_func_name
             parts.append(_convert_tool_call(tc))
 
         if parts:
@@ -319,7 +328,9 @@ def build_cloudcode_request(
     if is_thinking:
         thinking_budget = 32768
         if is_claude:
-            # Claude requires maxOutputTokens > thinking_budget
+            # Cloud Code API wraps Anthropic's native API — it uses snake_case
+            # field names (include_thoughts, thinking_budget) rather than
+            # Anthropic's direct format (type: "enabled", budget_tokens).
             gen_config["thinkingConfig"] = {
                 "include_thoughts": True,
                 "thinking_budget": thinking_budget,
