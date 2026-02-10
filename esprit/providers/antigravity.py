@@ -79,6 +79,37 @@ ANTIGRAVITY_MODELS = {
     "gemini-3-pro-low",
 }
 
+# Fallback chain: ordered by capability (high → low).
+# When a model fails persistently, try the next one down.
+ANTIGRAVITY_FALLBACK_CHAIN: list[str] = [
+    "claude-opus-4-6-thinking",
+    "claude-opus-4-5-thinking",
+    "claude-sonnet-4-5-thinking",
+    "claude-sonnet-4-5",
+    "gemini-3-pro-high",
+    "gemini-3-pro-low",
+    "gemini-2.5-pro",
+    "gemini-3-flash",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-thinking",
+    "gemini-2.5-flash-lite",
+]
+
+
+def get_fallback_models(current_model: str) -> list[str]:
+    """Get ordered list of fallback models to try after the current one fails."""
+    bare = current_model.split("/", 1)[-1] if "/" in current_model else current_model
+    try:
+        idx = ANTIGRAVITY_FALLBACK_CHAIN.index(bare)
+        return ANTIGRAVITY_FALLBACK_CHAIN[idx + 1:]
+    except ValueError:
+        # Model not in chain — return everything below gemini-3-flash
+        try:
+            idx = ANTIGRAVITY_FALLBACK_CHAIN.index("gemini-3-flash")
+            return ANTIGRAVITY_FALLBACK_CHAIN[idx:]
+        except ValueError:
+            return []
+
 HTML_SUCCESS = """<!doctype html>
 <html>
   <head>

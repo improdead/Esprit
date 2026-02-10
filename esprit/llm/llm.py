@@ -171,6 +171,11 @@ class LLM:
                     # Rotated to a new account — retry immediately
                     continue
                 if attempt >= max_retries or not self._should_retry(e):
+                    # Before giving up, try auto model fallback for Antigravity
+                    if self._is_antigravity() and self._try_model_fallback(e):
+                        # Switched to fallback model — restart retry loop
+                        attempt = -1  # will become 0 after continue
+                        continue
                     self._raise_error(e)
                 wait = min(10, 2 * (2**attempt))
                 await asyncio.sleep(wait)
@@ -555,6 +560,50 @@ class LLM:
             logger.info("Rate limited on %s, rotated to %s", current.email, rotated.email)
             return True
         logger.warning("Rate limited on %s, no other accounts available", current.email)
+        return False
+
+    def _try_model_fallback(self, e: Exception) -> bool:
+        """Try switching to the next fallback model when the current one fails persistently.
+
+        Only activates for Antigravity models when ESPRIT_AUTO_FALLBACK is not 'false'.
+        Returns True if successfully switched to a fallback model.
+        """
+        if Config.get("esprit_auto_fallback") == "false":
+            return False
+
+        if not PROVIDERS_AVAILABLE:
+            return False
+
+        from esprit.providers.antigravity import get_fallback_models
+
+        current_model = self.config.model_name or ""
+        fallbacks = get_fallback_models(current_model)
+
+        if not fallbacks:
+            return False
+
+        # Track which models have already been tried this session
+        if not hasattr(self, "_tried_models"):
+            self._tried_models: set[str] = set()
+        self._tried_models.add(current_model.split("/", 1)[-1] if "/" in current_model else current_model)
+
+        for fallback in fallbacks:
+            if fallback in self._tried_models:
+                continue
+
+            # Switch model
+            old_model = current_model
+            prefix = current_model.split("/", 1)[0] + "/" if "/" in current_model else "antigravity/"
+            new_model = f"{prefix}{fallback}"
+            self.config.model_name = new_model
+            self._tried_models.add(fallback)
+
+            logger.warning(
+                "Model %s failed (%s), falling back to %s",
+                old_model, type(e).__name__, new_model,
+            )
+            return True
+
         return False
 
     def _supports_vision(self) -> bool:
