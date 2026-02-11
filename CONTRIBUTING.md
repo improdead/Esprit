@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to Esprit! This guide will help you get started with development and contributions.
 
-## 🚀 Development Setup
+## Development Setup
 
 ### Prerequisites
 
@@ -15,8 +15,8 @@ Thank you for your interest in contributing to Esprit! This guide will help you 
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/improdead/esprit.git
-   cd esprit
+   git clone https://github.com/improdead/Esprit.git
+   cd Esprit/cli
    ```
 
 2. **Install development dependencies**
@@ -39,7 +39,7 @@ Thank you for your interest in contributing to Esprit! This guide will help you 
    poetry run esprit --target https://example.com
    ```
 
-## 📚 Contributing Skills
+## Contributing Skills
 
 Skills are specialized knowledge packages that enhance agent capabilities. See [esprit/skills/README.md](esprit/skills/README.md) for detailed guidelines.
 
@@ -51,7 +51,7 @@ Skills are specialized knowledge packages that enhance agent capabilities. See [
 4. **Provide validation methods** - How to confirm findings and avoid false positives
 5. **Submit via PR** with clear description
 
-## 🔧 Contributing Code
+## Contributing Code
 
 ### Pull Request Process
 
@@ -78,7 +78,7 @@ Skills are specialized knowledge packages that enhance agent capabilities. See [
 - Keep functions focused and small
 - Use meaningful variable names
 
-## 🐛 Reporting Issues
+## Reporting Issues
 
 When reporting bugs, please include:
 
@@ -89,7 +89,7 @@ When reporting bugs, please include:
 - Steps to reproduce
 - Expected vs actual behavior
 
-## 💡 Feature Requests
+## Feature Requests
 
 We welcome feature ideas! Please:
 
@@ -99,12 +99,12 @@ We welcome feature ideas! Please:
 - Consider implementation approach
 - Be open to discussion
 
-## 🤝 Community
+## Community
 
 - **Discord**: [Join our community](https://discord.gg/esprit-ai)
-- **Issues**: [GitHub Issues](https://github.com/improdead/esprit/issues)
+- **Issues**: [GitHub Issues](https://github.com/improdead/Esprit/issues)
 
-## ✨ Recognition
+## Recognition
 
 We value all contributions! Contributors will be:
 - Listed in release notes

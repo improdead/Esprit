@@ -1,12 +1,12 @@
 # Esprit Skills
 
-## 🎯 Overview
+## Overview
 
 Skills are specialized knowledge packages that enhance Esprit agents with deep expertise in specific vulnerability types, technologies, and testing methodologies. Each skill provides advanced techniques, practical examples, and validation methods that go beyond baseline security knowledge.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ### How Skills Work
 
@@ -25,7 +25,7 @@ The skills are dynamically injected into the agent's system prompt, allowing it 
 
 ---
 
-## 📁 Skill Categories
+## Skill Categories
 
 | Category | Purpose |
 |----------|---------|
@@ -39,7 +39,7 @@ The skills are dynamically injected into the agent's system prompt, allowing it 
 
 ---
 
-## 🎨 Creating New Skills
+## Creating New Skills
 
 ### What Should a Skill Contain?
 
@@ -55,9 +55,9 @@ Skills focus on deep, specialized knowledge to significantly enhance agent capab
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
-Community contributions are more than welcome — contribute new skills via [pull requests](https://github.com/improdead/esprit/pulls) or [GitHub issues](https://github.com/improdead/esprit/issues) to help expand the collection and improve extensibility for Esprit agents.
+Community contributions are more than welcome — contribute new skills via [pull requests](https://github.com/improdead/Esprit/pulls) or [GitHub issues](https://github.com/improdead/Esprit/issues) to help expand the collection and improve extensibility for Esprit agents.
 
 ---
 

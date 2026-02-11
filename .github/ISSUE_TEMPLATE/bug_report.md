@@ -25,7 +25,7 @@ If applicable, add screenshots to help explain your problem.
 
 **System Information:**
 - OS: [e.g. Ubuntu 22.04]
-- Esprit Version or Commit: [e.g. 0.1.18]
+- Esprit Version or Commit: [e.g. 0.8.0]
 - Python Version: [e.g. 3.12]
 - LLM Used: [e.g. GPT-5, Claude Sonnet 4]
 
