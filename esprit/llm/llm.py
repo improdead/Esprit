@@ -20,6 +20,7 @@ from esprit.llm.utils import (
     parse_tool_invocations,
 )
 from esprit.skills import load_skills
+from esprit.tools import get_tools_prompt
 from esprit.utils.resource_paths import get_esprit_resource_path
 
 # Provider OAuth integration (Codex, Copilot, Gemini, Anthropic, Antigravity)
@@ -141,6 +142,7 @@ class LLM:
             env.globals["get_skill"] = lambda name: skill_content.get(name, "")
 
             result = env.get_template("system_prompt.jinja").render(
+                get_tools_prompt=get_tools_prompt,
                 loaded_skill_names=list(skill_content.keys()),
                 **skill_content,
             )
@@ -391,19 +393,42 @@ class LLM:
         # Convert native tool calls from Cloud Code if present
         native_invocations = None
         if all_tool_calls:
-            native_invocations = []
+            converted_invocations = []
             for tc in all_tool_calls:
-                tc_args = tc.get("args", {})
-                if isinstance(tc_args, str):
+                function_payload = tc.get("function", {})
+                if not isinstance(function_payload, dict):
+                    function_payload = {}
+
+                tool_name = tc.get("name") or function_payload.get("name", "")
+                if not tool_name:
+                    continue
+
+                raw_args = tc.get("args")
+                if raw_args is None:
+                    raw_args = tc.get("arguments")
+                if raw_args is None:
+                    raw_args = function_payload.get("arguments", function_payload.get("args", {}))
+
+                tc_args: dict[str, Any]
+                if isinstance(raw_args, str):
                     try:
-                        tc_args = json.loads(tc_args)
+                        parsed = json.loads(raw_args)
+                        tc_args = parsed if isinstance(parsed, dict) else {}
                     except (json.JSONDecodeError, ValueError):
                         tc_args = {}
-                native_invocations.append({
-                    "toolName": tc.get("name", ""),
+                elif isinstance(raw_args, dict):
+                    tc_args = raw_args
+                else:
+                    tc_args = {}
+
+                tool_call_id = tc.get("id") or tc.get("tool_call_id", "")
+
+                converted_invocations.append({
+                    "toolName": tool_name,
                     "args": tc_args,
-                    "tool_call_id": tc.get("id", ""),
+                    "tool_call_id": tool_call_id,
                 })
+            native_invocations = converted_invocations or None
         yield LLMResponse(
             content=accumulated,
             tool_invocations=native_invocations or parse_tool_invocations(accumulated),

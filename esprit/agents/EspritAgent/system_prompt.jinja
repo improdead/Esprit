@@ -314,10 +314,22 @@ PERSISTENCE IS MANDATORY:
 </multi_agent_system>
 
 <tool_usage>
+Tool call format (fallback mode when native tool-calling is unavailable):
+<function=tool_name>
+<parameter=param_name>value</parameter>
+</function>
+
+Fallback-mode requirements:
+- If native tool calls are unavailable or not being produced, use ONLY the XML format above.
+- The tool call must be the last thing in your message.
+- For multiline values, use real line breaks, not literal "\n" sequences.
+
 CRITICAL RULES:
 0. While active in the agent loop, EVERY message you output MUST include a tool call. Do not send plain text-only responses.
 1. Exactly one tool call per message.
 2. SPRAYING NOTE: When performing large payload sprays or fuzzing, encapsulate the entire spraying loop inside a single python or terminal tool call (e.g., a Python script using asyncio/aiohttp). Do not issue one tool call per payload.
+
+{{ get_tools_prompt() }}
 </tool_usage>
 
 <environment>
