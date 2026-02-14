@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -346,8 +347,9 @@ class BaseAgent(metaclass=AgentMeta):
 
     async def _process_iteration(self, tracer: Optional["Tracer"]) -> bool:
         final_response = None
+        tools = self._get_agent_tools()
 
-        async for response in self.llm.generate(self.state.get_conversation_history()):
+        async for response in self.llm.generate(self.state.get_conversation_history(), tools=tools):
             final_response = response
             if tracer and response.content:
                 tracer.update_streaming_content(self.state.agent_id, response.content)
@@ -357,7 +359,7 @@ class BaseAgent(metaclass=AgentMeta):
 
         content_stripped = (final_response.content or "").strip()
 
-        if not content_stripped:
+        if not content_stripped and not final_response.tool_invocations:
             corrective_message = (
                 "You MUST NOT respond with empty messages. "
                 "If you currently have nothing to do or say, use an appropriate tool instead:\n"
@@ -371,8 +373,41 @@ class BaseAgent(metaclass=AgentMeta):
             self.state.add_message("user", corrective_message)
             return False
 
+        # Build tool_calls for the assistant message (native mode)
+        native_tool_calls = None
+        actions = final_response.tool_invocations or []
+        if any(inv.get("tool_call_id") for inv in actions):
+            tool_calls_payload: list[dict[str, Any]] = []
+            for inv in actions:
+                tool_call_id = str(inv.get("tool_call_id") or "")
+                if not tool_call_id:
+                    continue
+
+                try:
+                    arguments_json = json.dumps(inv.get("args", {}), default=str)
+                except (TypeError, ValueError):
+                    arguments_json = "{}"
+
+                tool_calls_payload.append(
+                    {
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": str(inv.get("toolName") or ""),
+                            "arguments": arguments_json,
+                        },
+                    }
+                )
+
+            native_tool_calls = tool_calls_payload or None
+
         thinking_blocks = getattr(final_response, "thinking_blocks", None)
-        self.state.add_message("assistant", final_response.content, thinking_blocks=thinking_blocks)
+        self.state.add_message(
+            "assistant",
+            final_response.content or "",
+            thinking_blocks=thinking_blocks,
+            tool_calls=native_tool_calls,
+        )
         if tracer:
             tracer.clear_streaming_content(self.state.agent_id)
             tracer.log_chat_message(
@@ -381,16 +416,23 @@ class BaseAgent(metaclass=AgentMeta):
                 agent_id=self.state.agent_id,
             )
 
-        actions = (
-            final_response.tool_invocations
-            if hasattr(final_response, "tool_invocations") and final_response.tool_invocations
-            else []
-        )
-
         if actions:
             return await self._execute_actions(actions, tracer)
 
         return False
+
+    def _get_agent_tools(self) -> list[dict[str, Any]] | None:
+        """Get JSON tool definitions for native tool calling."""
+        if not self.llm.supports_native_tool_calling():
+            return None
+
+        try:
+            from esprit.tools.registry import get_tools_json
+
+            tools = get_tools_json()
+            return tools or None
+        except ImportError:
+            return None
 
     async def _execute_actions(self, actions: list[Any], tracer: Optional["Tracer"]) -> bool:
         """Execute actions and return True if agent should finish."""

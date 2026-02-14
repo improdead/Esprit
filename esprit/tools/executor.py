@@ -2,6 +2,8 @@ import inspect
 import os
 from typing import Any
 
+import defusedxml.ElementTree as DefusedET
+
 import httpx
 
 from esprit.config import Config
@@ -321,25 +323,90 @@ async def process_tool_invocations(
 
     tracer, agent_id = _get_tracer_and_agent_id(agent_state)
 
+    # Native mode requires every invocation to carry a tool_call_id.
+    # Mixed payloads (some with IDs, some without) fall back to legacy XML mode.
+    tool_call_ids = [str(inv.get("tool_call_id") or "") for inv in tool_invocations]
+    has_all_tool_call_ids = bool(tool_call_ids) and all(tool_call_ids)
+    has_mixed_tool_call_ids = any(tool_call_ids) and not has_all_tool_call_ids
+    is_native = has_all_tool_call_ids
+    if has_mixed_tool_call_ids:
+        is_native = False
+
     for tool_inv in tool_invocations:
         observation_xml, images, tool_should_finish = await _execute_single_tool(
             tool_inv, agent_state, tracer, agent_id
         )
-        observation_parts.append(observation_xml)
-        all_images.extend(images)
+
+        if is_native:
+            # Native mode: each result is a separate role=tool message
+            tool_call_id = str(tool_inv.get("tool_call_id") or "")
+            tool_name = tool_inv.get("toolName", "unknown")
+            # Extract plain result text (strip XML wrapper)
+            result_text = _extract_plain_result(observation_xml, tool_name)
+            if images:
+                content: list[dict[str, Any]] = [{"type": "text", "text": result_text}]
+                content.extend(images)
+                conversation_history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": content,
+                })
+            else:
+                conversation_history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": result_text,
+                })
+        else:
+            observation_parts.append(observation_xml)
+            all_images.extend(images)
 
         if tool_should_finish:
             should_agent_finish = True
 
-    if all_images:
-        content = [{"type": "text", "text": "Tool Results:\n\n" + "\n\n".join(observation_parts)}]
-        content.extend(all_images)
-        conversation_history.append({"role": "user", "content": content})
-    else:
-        observation_content = "Tool Results:\n\n" + "\n\n".join(observation_parts)
-        conversation_history.append({"role": "user", "content": observation_content})
+    # Legacy XML mode: combine all results into one user message
+    if not is_native and observation_parts:
+        if all_images:
+            content = [{"type": "text", "text": "Tool Results:\n\n" + "\n\n".join(observation_parts)}]
+            content.extend(all_images)
+            conversation_history.append({"role": "user", "content": content})
+        else:
+            observation_content = "Tool Results:\n\n" + "\n\n".join(observation_parts)
+            conversation_history.append({"role": "user", "content": observation_content})
 
     return should_agent_finish
+
+
+def _extract_result_from_string(observation_xml: str) -> str | None:
+    start = observation_xml.find("<result>")
+    end = observation_xml.rfind("</result>")
+    if start == -1 or end == -1 or end < start + len("<result>"):
+        return None
+    return observation_xml[start + len("<result>") : end]
+
+
+def _extract_plain_result(observation_xml: str, _tool_name: str) -> str:
+    """Extract plain result text from XML-wrapped tool result."""
+    try:
+        root = DefusedET.fromstring(observation_xml)
+        if root.find("result") is not None:
+            # Keep raw payload to preserve nested tags and trailing text.
+            extracted = _extract_result_from_string(observation_xml)
+            if extracted is not None:
+                return extracted
+
+            # Should be rare: parser found <result> but raw tag search failed.
+            result_node = root.find("result")
+            if result_node is not None:
+                return "".join(result_node.itertext()).strip()
+    except DefusedET.ParseError:
+        pass
+
+    extracted = _extract_result_from_string(observation_xml)
+    if extracted is not None:
+        return extracted
+
+    return observation_xml
 
 
 def extract_screenshot_from_result(result: Any) -> str | None:

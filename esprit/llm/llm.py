@@ -143,6 +143,7 @@ class LLM:
 
             result = env.get_template("system_prompt.jinja").render(
                 get_tools_prompt=get_tools_prompt,
+                native_tools_enabled=self.supports_native_tool_calling(),
                 loaded_skill_names=list(skill_content.keys()),
                 **skill_content,
             )
@@ -156,8 +157,20 @@ class LLM:
         if agent_id:
             self.agent_id = agent_id
 
+    def supports_native_tool_calling(self) -> bool:
+        if not self.config.model_name:
+            return False
+
+        if self._is_antigravity():
+            return True
+
+        try:
+            return bool(litellm.supports_function_calling(model=self.config.model_name))
+        except Exception:  # noqa: BLE001
+            return False
+
     async def generate(
-        self, conversation_history: list[dict[str, Any]]
+        self, conversation_history: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
     ) -> AsyncIterator[LLMResponse]:
         messages = self._prepare_messages(conversation_history)
         max_retries = int(Config.get("esprit_llm_max_retries") or "5")
@@ -166,10 +179,10 @@ class LLM:
         while attempt <= max_retries:
             try:
                 if self._is_antigravity():
-                    async for response in self._stream_antigravity(messages):
+                    async for response in self._stream_antigravity(messages, tools=tools):
                         yield response
                 else:
-                    async for response in self._stream(messages):
+                    async for response in self._stream(messages, tools=tools):
                         yield response
                 return  # noqa: TRY300
             except Exception as e:  # noqa: BLE001
@@ -188,13 +201,13 @@ class LLM:
                 await asyncio.sleep(wait)
                 attempt += 1
 
-    async def _stream(self, messages: list[dict[str, Any]]) -> AsyncIterator[LLMResponse]:
+    async def _stream(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> AsyncIterator[LLMResponse]:
         accumulated = ""
         chunks: list[Any] = []
         done_streaming = 0
 
         self._total_stats.requests += 1
-        response = await acompletion(**self._build_completion_args(messages), stream=True)
+        response = await acompletion(**self._build_completion_args(messages, tools=tools), stream=True)
 
         async for chunk in response:
             chunks.append(chunk)
@@ -215,17 +228,27 @@ class LLM:
                     continue
                 yield LLMResponse(content=accumulated)
 
-        if chunks:
-            self._update_usage_stats(stream_chunk_builder(chunks))
+        assembled = stream_chunk_builder(chunks) if chunks else None
+        if assembled:
+            self._update_usage_stats(assembled)
 
-        accumulated = fix_incomplete_tool_call(_truncate_to_first_function(accumulated))
-        yield LLMResponse(
-            content=accumulated,
-            tool_invocations=parse_tool_invocations(accumulated),
-            thinking_blocks=self._extract_thinking(chunks),
-        )
+        # Try native tool calls first, fall back to XML parsing
+        native_tool_calls = self._extract_native_tool_calls(assembled)
+        if native_tool_calls:
+            yield LLMResponse(
+                content=accumulated,
+                tool_invocations=native_tool_calls,
+                thinking_blocks=self._extract_thinking(chunks),
+            )
+        else:
+            accumulated = fix_incomplete_tool_call(_truncate_to_first_function(accumulated))
+            yield LLMResponse(
+                content=accumulated,
+                tool_invocations=parse_tool_invocations(accumulated),
+                thinking_blocks=self._extract_thinking(chunks),
+            )
 
-    async def _stream_antigravity(self, messages: list[dict[str, Any]]) -> AsyncIterator[LLMResponse]:
+    async def _stream_antigravity(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> AsyncIterator[LLMResponse]:
         """Stream responses from the Antigravity Cloud Code API directly."""
         self._total_stats.requests += 1
 
@@ -261,6 +284,7 @@ class LLM:
             model=model,
             project_id=project_id,
             max_tokens=int(Config.get("esprit_max_tokens") or "16384"),
+            tools=tools,
         )
         headers = build_request_headers(access_token, model)
 
@@ -379,9 +403,48 @@ class LLM:
             )
 
         accumulated = fix_incomplete_tool_call(_truncate_to_first_function(accumulated))
+        # Convert native tool calls from Cloud Code if present
+        native_invocations = None
+        if all_tool_calls:
+            converted_invocations = []
+            for tc in all_tool_calls:
+                function_payload = tc.get("function", {})
+                if not isinstance(function_payload, dict):
+                    function_payload = {}
+
+                tool_name = tc.get("name") or function_payload.get("name", "")
+                if not tool_name:
+                    continue
+
+                raw_args = tc.get("args")
+                if raw_args is None:
+                    raw_args = tc.get("arguments")
+                if raw_args is None:
+                    raw_args = function_payload.get("arguments", function_payload.get("args", {}))
+
+                tc_args: dict[str, Any]
+                if isinstance(raw_args, str):
+                    try:
+                        parsed = json.loads(raw_args)
+                        tc_args = parsed if isinstance(parsed, dict) else {}
+                    except (json.JSONDecodeError, ValueError):
+                        tc_args = {}
+                elif isinstance(raw_args, dict):
+                    tc_args = raw_args
+                else:
+                    tc_args = {}
+
+                tool_call_id = tc.get("id") or tc.get("tool_call_id", "")
+
+                converted_invocations.append({
+                    "toolName": tool_name,
+                    "args": tc_args,
+                    "tool_call_id": tool_call_id,
+                })
+            native_invocations = converted_invocations or None
         yield LLMResponse(
             content=accumulated,
-            tool_invocations=parse_tool_invocations(accumulated),
+            tool_invocations=native_invocations or parse_tool_invocations(accumulated),
             thinking_blocks=all_thinking or None,
         )
 
@@ -428,7 +491,7 @@ class LLM:
             if tracer and agent_id:
                 tracer.compacting_agents.discard(agent_id)
 
-    def _build_completion_args(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    def _build_completion_args(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         if not self._supports_vision():
             messages = self._strip_images(messages)
 
@@ -438,6 +501,9 @@ class LLM:
             "timeout": self.config.timeout,
             "stream_options": {"include_usage": True},
         }
+
+        if tools:
+            args["tools"] = tools
 
         # Translate google/ → gemini/ for litellm compatibility
         if self.config.model_name and self.config.model_name.lower().startswith("google/"):
@@ -497,6 +563,59 @@ class LLM:
         except Exception:  # noqa: BLE001, S110  # nosec B110
             pass
         return None
+
+    def _extract_native_tool_calls(self, response: Any) -> list[dict[str, Any]] | None:
+        """Extract native tool calls from a litellm assembled response."""
+        if not response or not response.choices:
+            return None
+        msg = response.choices[0].message
+        tool_calls = getattr(msg, "tool_calls", None)
+        if not tool_calls:
+            return None
+        result = []
+        for tc in tool_calls:
+            tool_name = ""
+            tool_call_id = ""
+            args: dict[str, Any] = {}
+
+            try:
+                function_payload = getattr(tc, "function", None)
+                if isinstance(tc, dict) and not function_payload:
+                    function_payload = tc.get("function")
+
+                raw_name = getattr(function_payload, "name", "")
+                if isinstance(function_payload, dict):
+                    raw_name = function_payload.get("name", raw_name)
+                tool_name = str(raw_name or "")
+
+                raw_call_id = getattr(tc, "id", "")
+                if isinstance(tc, dict):
+                    raw_call_id = tc.get("id", raw_call_id)
+                tool_call_id = str(raw_call_id or "")
+
+                raw_args: Any = None
+                if function_payload is not None:
+                    raw_args = getattr(function_payload, "arguments", None)
+                    if isinstance(function_payload, dict):
+                        raw_args = function_payload.get("arguments", raw_args)
+
+                if isinstance(raw_args, str):
+                    parsed = json.loads(raw_args)
+                    args = parsed if isinstance(parsed, dict) else {}
+                elif isinstance(raw_args, dict):
+                    args = raw_args
+            except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+                args = {}
+
+            if not tool_name:
+                continue
+
+            result.append({
+                "toolName": tool_name,
+                "args": args,
+                "tool_call_id": tool_call_id,
+            })
+        return result or None
 
     def _update_usage_stats(self, response: Any) -> None:
         try:
@@ -700,14 +819,97 @@ class LLM:
 
         result = list(messages)
 
+        # Cache static prefix blocks first for better cache hit rates:
+        # 1) system prompt
+        # 2) agent identity metadata block
+        # 3) first real user task/instruction
+        # 4) rolling checkpoint near the end of context
+        cached_indices: set[int] = set()
+
         if result[0].get("role") == "system":
-            content = result[0]["content"]
             result[0] = {
                 **result[0],
-                "content": [
-                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
-                ]
-                if isinstance(content, str)
-                else content,
+                "content": self._with_ephemeral_cache_control(result[0].get("content")),
             }
+            cached_indices.add(0)
+
+        identity_index = None
+        for idx, msg in enumerate(result[1:], start=1):
+            if not self._is_agent_identity_message(msg):
+                continue
+            identity_index = idx
+            result[idx] = {
+                **msg,
+                "content": self._with_ephemeral_cache_control(msg.get("content")),
+            }
+            cached_indices.add(idx)
+            break
+
+        start_index = 1 if identity_index is None else identity_index + 1
+        for idx in range(start_index, len(result)):
+            msg = result[idx]
+            if msg.get("role") != "user":
+                continue
+            if self._is_agent_identity_message(msg):
+                continue
+            result[idx] = {
+                **msg,
+                "content": self._with_ephemeral_cache_control(msg.get("content")),
+            }
+            cached_indices.add(idx)
+            break
+
+        # Rolling checkpoint captures the latest stable prefix for future turns.
+        for idx in range(len(result) - 1, 0, -1):
+            if idx in cached_indices:
+                continue
+            msg = result[idx]
+            if msg.get("role") not in {"user", "assistant"}:
+                continue
+            if self._is_agent_identity_message(msg):
+                continue
+            result[idx] = {
+                **msg,
+                "content": self._with_ephemeral_cache_control(msg.get("content")),
+            }
+            break
+
         return result
+
+    def _with_ephemeral_cache_control(self, content: Any) -> Any:
+        if isinstance(content, str):
+            return [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+
+        if not isinstance(content, list):
+            return content
+
+        updated_content: list[Any] = []
+        changed = False
+
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text" and "cache_control" not in part:
+                updated_content.append({**part, "cache_control": {"type": "ephemeral"}})
+                changed = True
+            else:
+                updated_content.append(part)
+
+        return updated_content if changed else content
+
+    def _is_agent_identity_message(self, message: dict[str, Any]) -> bool:
+        if message.get("role") != "user":
+            return False
+
+        content = message.get("content")
+        if isinstance(content, str):
+            return "<agent_identity>" in content
+
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") != "text":
+                    continue
+                if "<agent_identity>" in str(part.get("text", "")):
+                    return True
+
+        return False
